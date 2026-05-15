@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TerraScope — Semantic Diff Engine</title>
+
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Fonts: Syne (display) + JetBrains Mono (code) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['Syne', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            surface: {
+              DEFAULT: 'rgba(15,17,26,1)',
+              card:    'rgba(22,25,38,0.72)',
+              hover:   'rgba(30,34,52,0.85)',
+            },
+            accent: {
+              cyan:   '#22d3ee',
+              indigo: '#818cf8',
+              violet: '#a78bfa',
+            },
+          },
+          animation: {
+            'pulse-slow': 'pulse 3s cubic-bezier(0.4,0,0.6,1) infinite',
+            'fade-in':    'fadeIn 0.5s ease forwards',
+            'slide-up':   'slideUp 0.55s cubic-bezier(0.16,1,0.3,1) forwards',
+          },
+          keyframes: {
+            fadeIn:  { from: { opacity: 0 }, to: { opacity: 1 } },
+            slideUp: { from: { opacity: 0, transform: 'translateY(18px)' }, to: { opacity: 1, transform: 'translateY(0)' } },
+          },
+        },
+      },
+    };
+  </script>
+
+  <style>
+    /* ── Base ─────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      font-family: 'Syne', sans-serif;
+      background: #0b0d17;
+      color: #e2e8f0;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Mesh background ──────────────────────────────────── */
+    .bg-mesh {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      background:
+        radial-gradient(ellipse 80% 60% at 10% 0%,   rgba(99,102,241,.18) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 50% at 90% 100%,  rgba(34,211,238,.13) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 40% at 50%  50%,  rgba(167,139,250,.08) 0%, transparent 60%);
+    }
+
+    /* ── Glassmorphism card ───────────────────────────────── */
+    .glass {
+      background: rgba(22,25,38,0.65);
+      backdrop-filter: blur(18px) saturate(160%);
+      -webkit-backdrop-filter: blur(18px) saturate(160%);
+      border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 1.25rem;
+    }
+    .glass:hover { border-color: rgba(255,255,255,0.13); }
+
+    /* ── Upload zone ──────────────────────────────────────── */
+    .upload-zone {
+      border: 2px dashed rgba(130,140,200,0.28);
+      border-radius: 1rem;
+      transition: all .25s ease;
+      cursor: pointer;
+      position: relative;
+    }
+    .upload-zone:hover,
+    .upload-zone.drag-over {
+      border-color: rgba(129,140,248,.7);
+      background: rgba(99,102,241,.07);
+    }
+    .upload-zone input[type="file"] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+
+    /* ── Risk badges ──────────────────────────────────────── */
+    .badge { display: inline-flex; align-items: center; gap: .45rem; padding: .3rem .9rem; border-radius: 999px; font-size: .78rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+    .badge-low      { background: rgba(16,185,129,.15); color: #34d399; border: 1px solid rgba(52,211,153,.25); }
+    .badge-medium   { background: rgba(245,158,11,.12); color: #fbbf24; border: 1px solid rgba(251,191,36,.25); }
+    .badge-high     { background: rgba(239,68,68,.12);  color: #f87171; border: 1px solid rgba(248,113,113,.25); }
+    .badge-critical { background: rgba(220,38,38,.18);  color: #fca5a5; border: 1px solid rgba(252,165,165,.35); animation: pulse-critical 1.6s infinite; }
+
+    @keyframes pulse-critical {
+      0%,100% { box-shadow: 0 0 0 0 rgba(220,38,38,.4); }
+      50%      { box-shadow: 0 0 0 6px rgba(220,38,38,0); }
+    }
+
+    /* ── Spinner ──────────────────────────────────────────── */
+    .spinner {
+      width: 44px; height: 44px;
+      border: 3px solid rgba(129,140,248,.2);
+      border-top-color: #818cf8;
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Report prose ─────────────────────────────────────── */
+    .report-body {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .82rem;
+      line-height: 1.75;
+      color: #94a3b8;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* ── Stat card ────────────────────────────────────────── */
+    .stat-label { font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; color: #64748b; margin-bottom: .3rem; }
+    .stat-value { font-size: 1.05rem; font-weight: 600; color: #e2e8f0; }
+
+    /* ── Divider ──────────────────────────────────────────── */
+    .divider { border: none; border-top: 1px solid rgba(255,255,255,0.06); margin: 1.5rem 0; }
+
+    /* ── Flag item ────────────────────────────────────────── */
+    .flag-item {
+      display: flex; align-items: flex-start; gap: .65rem;
+      padding: .75rem 1rem;
+      background: rgba(239,68,68,.07);
+      border: 1px solid rgba(239,68,68,.18);
+      border-radius: .75rem;
+      font-size: .85rem;
+      color: #fca5a5;
+      margin-bottom: .5rem;
+    }
+
+    /* ── Animate-in utilities ─────────────────────────────── */
+    .delay-1 { animation-delay: .05s; }
+    .delay-2 { animation-delay: .12s; }
+    .delay-3 { animation-delay: .19s; }
+    .delay-4 { animation-delay: .26s; }
+    .delay-5 { animation-delay: .33s; }
+    .hidden-anim { opacity: 0; }
+  </style>
+</head>
+<body>
+
+<!-- Mesh background -->
+<div class="bg-mesh" aria-hidden="true"></div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     MAIN LAYOUT
+══════════════════════════════════════════════════════════════ -->
+<div class="relative z-10 min-h-screen flex flex-col">
+
+  <!-- ── Header ─────────────────────────────────────────── -->
+  <header class="py-7 px-6 flex items-center justify-between max-w-5xl mx-auto w-full">
+    <div class="flex items-center gap-3">
+      <!-- logo mark -->
+      <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="32" height="32" rx="9" fill="url(#logoGrad)"/>
+        <path d="M8 10h7v3H8zM8 16h5v3H8zM17 10h7v9h-7z" fill="white" fill-opacity=".9"/>
+        <path d="M8 22h16" stroke="white" stroke-opacity=".4" stroke-width="1.5" stroke-linecap="round"/>
+        <defs>
+          <linearGradient id="logoGrad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#6366f1"/>
+            <stop offset="1" stop-color="#22d3ee"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <span class="text-lg font-display font-700 tracking-tight">TerraScope</span>
+    </div>
+    <span class="text-xs font-mono text-slate-500 px-3 py-1 rounded-full border border-slate-700/50">Semantic Diff Engine</span>
+  </header>
+
+  <!-- ── Hero ───────────────────────────────────────────── -->
+  <main class="flex-1 flex flex-col items-center px-4 pb-16">
+
+    <div class="text-center mb-10 mt-2">
+      <h1 class="text-4xl sm:text-5xl font-display font-800 tracking-tight mb-3 leading-tight"
+          style="background: linear-gradient(135deg,#e2e8f0 0%,#818cf8 60%,#22d3ee 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;">
+        Understand what changed.<br/>Before it matters.
+      </h1>
+      <p class="text-slate-400 text-base max-w-md mx-auto leading-relaxed">
+        Upload two Terraform configs and get an AI-powered risk analysis, blast radius estimate, and security audit in seconds.
+      </p>
+    </div>
+
+    <!-- ── Upload card ──────────────────────────────────── -->
+    <div class="glass w-full max-w-3xl p-8 mb-6" id="uploadCard">
+      <form id="diffForm" enctype="multipart/form-data">
+
+        <!-- File drop zones -->
+        <div class="grid sm:grid-cols-2 gap-5 mb-7">
+
+          <!-- Before -->
+          <div>
+            <label class="block text-xs font-600 text-slate-400 uppercase tracking-widest mb-2 ml-1">Before</label>
+            <div class="upload-zone flex flex-col items-center justify-center gap-2 py-8 px-4 text-center" id="zone-before">
+              <input type="file" name="before" id="beforeFile" accept=".tf" required />
+              <svg id="icon-before" class="w-8 h-8 text-indigo-400 mb-1" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+              <span id="label-before" class="text-sm text-slate-400">Drop <code class="font-mono text-indigo-300 text-xs">before.tf</code> here</span>
+              <span class="text-xs text-slate-600">or click to browse</span>
+            </div>
+          </div>
+
+          <!-- After -->
+          <div>
+            <label class="block text-xs font-600 text-slate-400 uppercase tracking-widest mb-2 ml-1">After</label>
+            <div class="upload-zone flex flex-col items-center justify-center gap-2 py-8 px-4 text-center" id="zone-after">
+              <input type="file" name="after" id="afterFile" accept=".tf" required />
+              <svg id="icon-after" class="w-8 h-8 text-cyan-400 mb-1" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+              <span id="label-after" class="text-sm text-slate-400">Drop <code class="font-mono text-cyan-300 text-xs">after.tf</code> here</span>
+              <span class="text-xs text-slate-600">or click to browse</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Error banner -->
+        <div id="errorBanner" class="hidden mb-5 flex items-center gap-3 px-4 py-3 rounded-xl bg-red-950/60 border border-red-700/40 text-red-300 text-sm">
+          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path stroke-linecap="round" d="M12 8v4m0 4h.01"/></svg>
+          <span id="errorText"></span>
+        </div>
+
+        <!-- Analyze button -->
+        <button type="submit" id="analyzeBtn"
+          class="w-full py-3.5 rounded-xl font-display font-700 text-base tracking-wide transition-all duration-200
+                 bg-gradient-to-r from-indigo-600 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400
+                 text-white shadow-lg shadow-indigo-900/40 hover:shadow-indigo-800/60
+                 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none">
+          Analyze Diff
+        </button>
+      </form>
+    </div>
+
+    <!-- ── Loading state ─────────────────────────────────── -->
+    <div id="loadingState" class="hidden flex-col items-center gap-5 py-8">
+      <div class="spinner"></div>
+      <div class="text-center">
+        <p class="text-slate-300 font-600 mb-1">Running semantic analysis…</p>
+        <p class="text-slate-500 text-sm" id="loadingMsg">Parsing resource graph</p>
+      </div>
+    </div>
+
+    <!-- ── Results ────────────────────────────────────────── -->
+    <div id="results" class="hidden w-full max-w-3xl space-y-5">
+
+      <!-- Row 1: Risk + Blast Radius + Intent -->
+      <div class="grid sm:grid-cols-3 gap-4">
+
+        <!-- Risk level -->
+        <div class="glass p-5 hidden-anim animate-slide-up delay-1">
+          <p class="stat-label">Risk Level</p>
+          <div id="riskBadge" class="mt-2"></div>
+        </div>
+
+        <!-- Blast radius -->
+        <div class="glass p-5 hidden-anim animate-slide-up delay-2">
+          <p class="stat-label">Blast Radius</p>
+          <p id="blastRadius" class="stat-value mt-1"></p>
+        </div>
+
+        <!-- Intent -->
+        <div class="glass p-5 sm:col-span-1 hidden-anim animate-slide-up delay-3">
+          <p class="stat-label">Intent</p>
+          <p id="intentSummary" class="text-sm text-slate-300 mt-1 leading-relaxed"></p>
+        </div>
+      </div>
+
+      <!-- Row 2: Security flags -->
+      <div class="glass p-6 hidden-anim animate-slide-up delay-4" id="flagsCard">
+        <div class="flex items-center gap-2 mb-4">
+          <svg class="w-4 h-4 text-red-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3l1.664 1.664M21 21l-1.5-1.5m-5.485-1.242L12 17.25 4.5 21V8.742m.164-4.078a2.15 2.15 0 011.743-1.342 48.507 48.507 0 0111.186 0c1.1.128 1.907 1.046 1.907 2.185V19.5M4.664 4.664L19.5 19.5"/></svg>
+          <h2 class="font-display font-600 text-sm uppercase tracking-widest text-slate-300">Security Flags</h2>
+          <span id="flagCount" class="ml-auto text-xs font-mono px-2 py-0.5 rounded-full bg-red-900/40 text-red-300 border border-red-700/30"></span>
+        </div>
+        <div id="flagsList"></div>
+        <p id="noFlags" class="hidden flex items-center gap-2 text-emerald-400 text-sm">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          No security flags detected
+        </p>
+      </div>
+
+      <!-- Row 3: Full report -->
+      <div class="glass p-6 hidden-anim animate-slide-up delay-5">
+        <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+            <h2 class="font-display font-600 text-sm uppercase tracking-widest text-slate-300">Full Report</h2>
+          </div>
+          <button id="copyBtn" onclick="copyReport()"
+            class="text-xs font-mono text-slate-500 hover:text-slate-300 px-3 py-1 rounded-lg border border-slate-700/50 hover:border-slate-500 transition-all">
+            copy
+          </button>
+        </div>
+        <hr class="divider" />
+        <pre id="reportBody" class="report-body"></pre>
+      </div>
+
+      <!-- Re-analyze -->
+      <div class="text-center pt-2 pb-4">
+        <button onclick="resetForm()" class="text-sm text-slate-500 hover:text-slate-300 underline underline-offset-4 transition-colors">
+          ← Analyze another diff
+        </button>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- ── Footer ─────────────────────────────────────────── -->
+  <footer class="text-center py-5 text-xs text-slate-700 font-mono">
+    TerraScope · Semantic Diff Engine
+  </footer>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     SCRIPT
+══════════════════════════════════════════════════════════════ -->
+<script>
+  // ── Drag & drop feedback ─────────────────────────────────
+  ['before', 'after'].forEach(side => {
+    const zone  = document.getElementById(`zone-${side}`);
+    const input = document.getElementById(`${side}File`);
+    const label = document.getElementById(`label-${side}`);
+    const color = side === 'before' ? 'text-indigo-300' : 'text-cyan-300';
+
+    zone.addEventListener('dragover',  e => { e.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+    zone.addEventListener('drop',      e => {
+      e.preventDefault();
+      zone.classList.remove('drag-over');
+      if (e.dataTransfer.files[0]) {
+        input.files = e.dataTransfer.files;
+        updateLabel(side, e.dataTransfer.files[0].name, color);
+      }
+    });
+    input.addEventListener('change', () => {
+      if (input.files[0]) updateLabel(side, input.files[0].name, color);
+    });
+  });
+
+  function updateLabel(side, name, color) {
+    const label = document.getElementById(`label-${side}`);
+    label.innerHTML = `<span class="font-mono ${color} text-xs">${name}</span>`;
+  }
+
+  // ── Loading messages cycle ───────────────────────────────
+  const loadingMessages = [
+    'Parsing resource graph…',
+    'Running semantic analysis…',
+    'Evaluating blast radius…',
+    'Checking security posture…',
+    'Generating report…',
+  ];
+  let loadingInterval;
+
+  function startLoadingCycle() {
+    let i = 0;
+    const el = document.getElementById('loadingMsg');
+    el.textContent = loadingMessages[0];
+    loadingInterval = setInterval(() => {
+      i = (i + 1) % loadingMessages.length;
+      el.style.opacity = 0;
+      setTimeout(() => { el.textContent = loadingMessages[i]; el.style.opacity = 1; }, 200);
+    }, 1800);
+  }
+
+  // ── Risk badge render ────────────────────────────────────
+  const riskIcons = {
+    low:      '✦',
+    medium:   '⚠',
+    high:     '▲',
+    critical: '⬟',
+  };
+
+  function renderRiskBadge(level) {
+    const safe = ['low','medium','high','critical'].includes(level) ? level : 'medium';
+    return `<span class="badge badge-${safe}">${riskIcons[safe] || '●'} ${safe}</span>`;
+  }
+
+  // ── Form submit ──────────────────────────────────────────
+  document.getElementById('diffForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    hideError();
+
+    const btn   = document.getElementById('analyzeBtn');
+    const form  = document.getElementById('diffForm');
+    const load  = document.getElementById('loadingState');
+    const res   = document.getElementById('results');
+    const card  = document.getElementById('uploadCard');
+
+    btn.disabled = true;
+    btn.textContent = 'Analyzing…';
+
+    card.classList.add('hidden');
+    res.classList.add('hidden');
+    load.classList.remove('hidden');
+    load.classList.add('flex');
+    startLoadingCycle();
+
+    const data = new FormData(form);
+
+    try {
+      const response = await fetch('/analyze', { method: 'POST', body: data });
+      const json = await response.json();
+
+      clearInterval(loadingInterval);
+      load.classList.add('hidden');
+      load.classList.remove('flex');
+
+      if (!response.ok) {
+        showError(json.detail || 'Unexpected server error.');
+        card.classList.remove('hidden');
+        return;
+      }
+
+      populateResults(json);
+      res.classList.remove('hidden');
+
+    } catch (err) {
+      clearInterval(loadingInterval);
+      load.classList.add('hidden');
+      load.classList.remove('flex');
+      showError('Network error — is the backend running?');
+      card.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Analyze Diff';
+    }
+  });
+
+  // ── Populate results ─────────────────────────────────────
+  function populateResults(data) {
+    document.getElementById('riskBadge').innerHTML    = renderRiskBadge(data.risk_level);
+    document.getElementById('blastRadius').textContent = data.blast_radius  || '—';
+    document.getElementById('intentSummary').textContent = data.intent || '—';
+    document.getElementById('reportBody').textContent = data.report  || '';
+
+    const flags = data.security_flags || [];
+    document.getElementById('flagCount').textContent = `${flags.length} flag${flags.length !== 1 ? 's' : ''}`;
+    const list  = document.getElementById('flagsList');
+    const none  = document.getElementById('noFlags');
+
+    list.innerHTML = '';
+
+    if (flags.length === 0) {
+      none.classList.remove('hidden');
+    } else {
+      none.classList.add('hidden');
+      flags.forEach(f => {
+        const el = document.createElement('div');
+        el.className = 'flag-item';
+        el.innerHTML = `
+          <svg class="w-4 h-4 mt-0.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+          </svg>
+          <span>${escapeHtml(f)}</span>`;
+        list.appendChild(el);
+      });
+    }
+  }
+
+  // ── Helpers ──────────────────────────────────────────────
+  function showError(msg) {
+    const banner = document.getElementById('errorBanner');
+    document.getElementById('errorText').textContent = msg;
+    banner.classList.remove('hidden');
+    banner.classList.add('flex');
+  }
+  function hideError() {
+    const banner = document.getElementById('errorBanner');
+    banner.classList.add('hidden');
+    banner.classList.remove('flex');
+  }
+
+  function resetForm() {
+    document.getElementById('results').classList.add('hidden');
+    document.getElementById('uploadCard').classList.remove('hidden');
+    document.getElementById('diffForm').reset();
+    ['before','after'].forEach(s => {
+      const side = s === 'before' ? 'indigo' : 'cyan';
+      document.getElementById(`label-${s}`).innerHTML =
+        `Drop <code class="font-mono text-${side}-300 text-xs">${s}.tf</code> here`;
+    });
+    hideError();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function copyReport() {
+    const text = document.getElementById('reportBody').textContent;
+    navigator.clipboard.writeText(text).then(() => {
+      const btn = document.getElementById('copyBtn');
+      btn.textContent = 'copied ✓';
+      setTimeout(() => { btn.textContent = 'copy'; }, 2000);
+    });
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+</script>
+
+</body>
+</html>
