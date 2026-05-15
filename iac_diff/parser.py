@@ -1,6 +1,8 @@
 import hcl2
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
+
 
 @dataclass
 class Resource:
@@ -15,17 +17,18 @@ class Resource:
 
 
 def extract_references(config: dict) -> list[str]:
-    """Recursively find all resource references like aws_vpc.main.id"""
     refs = []
     def walk(obj):
         if isinstance(obj, str):
-            # terraform references look like: "${aws_subnet.main.id}" or just aws_subnet.main
-            import re
-            found = re.findall(r'([a-z][a-z0-9_]+\.[a-z][a-z0-9_]+)', obj)
+            # matches ${aws_vpc.main.id} or aws_vpc.main
+            found = re.findall(r'\$\{([a-z][a-z0-9_]+\.[a-z][a-z0-9_]+)\.[^}]+\}', obj)
             refs.extend(found)
+            found2 = re.findall(r'(?<!\$\{)([a-z][a-z0-9_]+\.[a-z][a-z0-9_]+)(?:\.[a-z_]+)?(?!\})', obj)
+            refs.extend(found2)
         elif isinstance(obj, dict):
-            for v in obj.values():
-                walk(v)
+            for k, v in obj.items():
+                if k not in ('__comments__', '__is_block__'):
+                    walk(v)
         elif isinstance(obj, list):
             for v in obj:
                 walk(v)
@@ -34,7 +37,6 @@ def extract_references(config: dict) -> list[str]:
 
 
 def parse_terraform(filepath: str) -> dict[str, Resource]:
-    """Parse a .tf file and return a dict of resource_id -> Resource"""
     path = Path(filepath)
     with open(path, 'r') as f:
         data = hcl2.load(f)
@@ -42,13 +44,22 @@ def parse_terraform(filepath: str) -> dict[str, Resource]:
     resources = {}
     for block in data.get('resource', []):
         for rtype, rtype_block in block.items():
+            # strip surrounding quotes from resource type and name
+            clean_type = rtype.strip('"')
             for rname, config in rtype_block.items():
+                clean_name = rname.strip('"')
                 refs = extract_references(config)
+                # only keep refs that look like valid resource IDs
+                valid_refs = [
+                    r for r in refs
+                    if r != f"{clean_type}.{clean_name}"
+                    and not r.startswith('0.')
+                ]
                 r = Resource(
-                    type=rtype,
-                    name=rname,
+                    type=clean_type,
+                    name=clean_name,
                     config=config,
-                    references=[ref for ref in refs if ref != f"{rtype}.{rname}"]
+                    references=valid_refs
                 )
                 resources[r.id] = r
     return resources

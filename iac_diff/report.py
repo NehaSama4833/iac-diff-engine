@@ -22,7 +22,7 @@ CHANGE_SYMBOLS = {
 }
 
 def print_report(blast_results, classifications):
-    console.print("\n[bold]IaC Semantic Diff Report[/bold]\n", style="bold white")
+    console.print("\n[bold]IaC Semantic Diff Report[/bold] [dim](Intent and risk powered by Llama 3.1 via Groq)[/dim]\n")
     
     table = Table(box=box.ROUNDED, show_header=True, header_style="bold")
     table.add_column("Change", width=4)
